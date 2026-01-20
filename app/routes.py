@@ -1,0 +1,134 @@
+from flask import Blueprint, jsonify, request
+from app import db
+from app.models import WaterLocation, Barangay, Admin
+import json
+
+bp = Blueprint('main', __name__)
+
+@bp.route('/api/water-locations', methods=['GET'])
+def get_water_locations():
+    """Get all water monitoring locations"""
+    try:
+        locations = WaterLocation.query.all()
+        return jsonify({
+            'success': True,
+            'data': [location.to_dict() for location in locations]
+        })
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+@bp.route('/api/water-locations/<int:location_id>', methods=['GET'])
+def get_water_location(location_id):
+    """Get specific water location details"""
+    try:
+        location = WaterLocation.query.get_or_404(location_id)
+        return jsonify({
+            'success': True,
+            'data': location.to_dict()
+        })
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+@bp.route('/api/barangays', methods=['GET'])
+def get_barangays():
+    """Get all barangays in Maasin"""
+    try:
+        barangays = Barangay.query.all()
+        return jsonify({
+            'success': True,
+            'data': [barangay.to_dict() for barangay in barangays]
+        })
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+@bp.route('/api/map-bounds', methods=['GET'])
+def get_map_bounds():
+    """Get map bounds for Maasin, Southern Leyte"""
+    # Approximate bounds for Maasin City, Southern Leyte
+    bounds = {
+        'north': 10.1500,
+        'south': 10.0500,
+        'east': 125.0500,
+        'west': 124.9500,
+        'center': {
+            'lat': 10.1300,
+            'lng': 125.0300
+        }
+    }
+    
+    return jsonify({
+        'success': True,
+        'data': bounds
+    })
+
+@bp.route('/api/health', methods=['GET'])
+def health_check():
+    """Health check endpoint"""
+    try:
+        # Test database connection
+        admin_count = Admin.query.count()
+        location_count = WaterLocation.query.count()
+        
+        return jsonify({
+            'success': True,
+            'message': 'Water Monitoring API is running',
+            'database': 'connected',
+            'stats': {
+                'admins': admin_count,
+                'locations': location_count
+            }
+        })
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'message': 'Database connection failed',
+            'error': str(e)
+        }), 500
+
+# Admin endpoints (basic)
+@bp.route('/api/admin/login', methods=['POST'])
+def admin_login():
+    """Admin login endpoint"""
+    try:
+        data = request.get_json()
+        username = data.get('username')
+        password = data.get('password')
+        
+        if not username or not password:
+            return jsonify({
+                'success': False,
+                'error': 'Username and password required'
+            }), 400
+        
+        admin = Admin.query.filter_by(username=username).first()
+        
+        if admin and admin.check_password(password) and admin.is_active:
+            # Update last login
+            admin.last_login = db.func.now()
+            db.session.commit()
+            
+            return jsonify({
+                'success': True,
+                'message': 'Login successful',
+                'admin': admin.to_dict()
+            })
+        else:
+            return jsonify({
+                'success': False,
+                'error': 'Invalid credentials'
+            }), 401
+    
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
