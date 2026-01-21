@@ -72,9 +72,7 @@ def get_map_bounds():
 
 @bp.route('/api/health', methods=['GET'])
 def health_check():
-    """Health check endpoint"""
     try:
-        # Test database connection
         admin_count = Admin.query.count()
         location_count = WaterLocation.query.count()
         
@@ -94,10 +92,8 @@ def health_check():
             'error': str(e)
         }), 500
 
-# Admin endpoints (basic)
 @bp.route('/api/admin/login', methods=['POST'])
 def admin_login():
-    """Admin login endpoint"""
     try:
         data = request.get_json()
         username = data.get('username')
