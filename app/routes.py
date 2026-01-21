@@ -92,6 +92,59 @@ def health_check():
             'error': str(e)
         }), 500
 
+@bp.route('/api/admin/register', methods=['POST'])
+def admin_register():
+    try:
+        data = request.get_json()
+        username = data.get('username')
+        email = data.get('email')
+        password = data.get('password')
+        
+        if not username or not email or not password:
+            return jsonify({
+                'success': False,
+                'error': 'Username, email, and password required'
+            }), 400
+        
+        # Check if username already exists
+        existing_admin = Admin.query.filter_by(username=username).first()
+        if existing_admin:
+            return jsonify({
+                'success': False,
+                'error': 'Username already exists'
+            }), 400
+        
+        # Check if email already exists  
+        existing_email = Admin.query.filter_by(email=email).first()
+        if existing_email:
+            return jsonify({
+                'success': False,
+                'error': 'Email already registered'
+            }), 400
+        
+        # Create new admin
+        new_admin = Admin(
+            username=username,
+            email=email
+        )
+        new_admin.set_password(password)
+        
+        db.session.add(new_admin)
+        db.session.commit()
+        
+        return jsonify({
+            'success': True,
+            'message': 'Admin account created successfully',
+            'admin': new_admin.to_dict()
+        })
+    
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
 @bp.route('/api/admin/login', methods=['POST'])
 def admin_login():
     try:

@@ -13,7 +13,6 @@ class Admin(db.Model):
     email = Column(String(120), unique=True, nullable=True)
     is_active = Column(Boolean, default=True)
     
-    # Timestamps
     created_at = Column(DateTime, default=datetime.utcnow)
     last_login = Column(DateTime)
     
@@ -21,11 +20,9 @@ class Admin(db.Model):
         return f'<Admin {self.username}>'
     
     def set_password(self, password):
-        """Set password hash"""
         self.password_hash = generate_password_hash(password)
     
     def check_password(self, password):
-        """Check password against hash"""
         return check_password_hash(self.password_hash, password)
     
     def to_dict(self):
@@ -45,32 +42,25 @@ class WaterLocation(db.Model):
     id = Column(Integer, primary_key=True)
     full_name = Column(String(255), nullable=False)
     
-    # Simple coordinates without PostGIS
     latitude = Column(Float, nullable=False)
     longitude = Column(Float, nullable=False)
     
-    # Water quality data
     coliform_bacteria = Column(Boolean, nullable=True)
     e_coli = Column(Boolean, nullable=True)
 
-    # Image path
     image_path = Column(String(255), nullable=True)
     
-    # Date and time
     sample_date = Column(Date, nullable=True)
     sample_time = Column(Time, nullable=True)
 
-    # Metadata
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     created_by = Column(Integer, db.ForeignKey('admins.id'), nullable=True)
     
-    # Relationships
     admin = db.relationship('Admin', backref='water_locations')
     
     @property
     def water_status(self):
-        """Compute water status based on bacteria presence"""
         if self.coliform_bacteria and self.e_coli:
             return "hazard"
         elif self.coliform_bacteria or self.e_coli:
@@ -104,7 +94,6 @@ class Barangay(db.Model):
     id = Column(Integer, primary_key=True)
     name = Column(String(100), nullable=False, unique=True)
     
-    # Center coordinates for map focus (without PostGIS)
     center_latitude = Column(Float, nullable=True)
     center_longitude = Column(Float, nullable=True)
     
@@ -125,7 +114,6 @@ class Barangay(db.Model):
 
 # Helper function to create default admin
 def create_default_admin():
-    """Create default admin user if none exists"""
     if not Admin.query.first():
         admin = Admin(
             username='admin',
