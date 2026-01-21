@@ -94,18 +94,27 @@ def health_check():
 
 @bp.route('/api/admin/register', methods=['POST'])
 def admin_register():
+    """Register new admin user"""
     try:
         data = request.get_json()
+        full_name = data.get('fullName')  # Changed to match frontend
         username = data.get('username')
         email = data.get('email')
         password = data.get('password')
         
-        if not username or not email or not password:
+        if not full_name or not username or not email or not password:
             return jsonify({
                 'success': False,
-                'error': 'Username, email, and password required'
+                'error': 'Full name, username, email, and password are required'
             }), 400
         
+        # Validate full name
+        if len(full_name.strip()) < 2:
+            return jsonify({
+                'success': False,
+                'error': 'Full name must be at least 2 characters'
+            }), 400
+            
         # Check if username already exists
         existing_admin = Admin.query.filter_by(username=username).first()
         if existing_admin:
@@ -124,6 +133,7 @@ def admin_register():
         
         # Create new admin
         new_admin = Admin(
+            full_name=full_name.strip(),  # Add full name
             username=username,
             email=email
         )
@@ -159,6 +169,12 @@ def admin_login():
             }), 400
         
         admin = Admin.query.filter_by(username=username).first()
+
+        if admin.is_active == False:
+            return jsonify({
+                'success': False,
+                'error': 'Account waiting for approval. Please contact the system administrator.'
+            }), 403
         
         if admin and admin.check_password(password) and admin.is_active:
             # Update last login
