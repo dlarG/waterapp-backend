@@ -154,6 +154,8 @@ def admin_register():
             'success': False,
             'error': str(e)
         }), 500
+    
+    
 
 @bp.route('/api/admin/login', methods=['POST'])
 def admin_login():
@@ -170,10 +172,16 @@ def admin_login():
         
         admin = Admin.query.filter_by(username=username).first()
 
-        if admin.is_active == False:
+        if admin and admin.check_password(password) and admin.is_active == False:
             return jsonify({
                 'success': False,
                 'error': 'Account waiting for approval. Please contact the system administrator.'
+            }), 403
+        
+        if admin and not admin.check_password(password):
+            return jsonify({
+                'success': False,
+                'error': 'Wrong password. Please try again.'
             }), 403
         
         if admin and admin.check_password(password) and admin.is_active:
@@ -181,10 +189,14 @@ def admin_login():
             admin.last_login = db.func.now()
             db.session.commit()
             
+            # 🎯 Enhanced response with complete admin data
             return jsonify({
                 'success': True,
                 'message': 'Login successful',
-                'admin': admin.to_dict()
+                'admin': admin.to_dict(),  # Complete admin object
+                # Keep these for backward compatibility
+                'full_name': admin.full_name,
+                'username': admin.username,
             })
         else:
             return jsonify({
