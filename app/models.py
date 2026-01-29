@@ -88,6 +88,41 @@ class WaterLocation(db.Model):
             'created_by': self.created_by
         }
 
+# 🆕 NEW: Household Model
+class Household(db.Model):
+    __tablename__ = 'households'
+    
+    id = Column(Integer, primary_key=True)
+    REGION_CODE = Column(String(10), nullable=True)
+    PROVINCE_CODE = Column(String(10), nullable=True) 
+    CITY_MUN_CODE = Column(String(10), nullable=True)
+    BARANGAY_CODE = Column(String(10), nullable=True)
+    EAN = Column(String(20), nullable=True)
+    BSN = Column(String(20), nullable=True)
+    HUSN = Column(String(20), nullable=True)
+    HSN = Column(String(20), nullable=True)
+    Q14_TOILET_FACILITY = Column(Integer, nullable=True)
+    LONGITUDE = Column(Float, nullable=False)
+    LATITUDE = Column(Float, nullable=False)
+    
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    def __repr__(self):
+        return f'<Household {self.id}>'
+    
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'region_code': self.REGION_CODE,
+            'province_code': self.PROVINCE_CODE,
+            'city_mun_code': self.CITY_MUN_CODE,
+            'barangay_code': self.BARANGAY_CODE,
+            'longitude': float(self.LONGITUDE) if self.LONGITUDE else None,
+            'latitude': float(self.LATITUDE) if self.LATITUDE else None,
+            'toilet_facility': self.Q14_TOILET_FACILITY,
+            'created_at': self.created_at.isoformat() if self.created_at else None
+        }
+
 class Barangay(db.Model):
     __tablename__ = 'barangays'
     

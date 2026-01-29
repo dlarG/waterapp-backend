@@ -1,6 +1,7 @@
 from flask import Blueprint, jsonify, request
 from app import db
-from app.models import WaterLocation, Barangay, Admin
+from app.models import WaterLocation, Barangay, Admin, Household
+from sqlalchemy import text
 import json
 
 bp = Blueprint('main', __name__)
@@ -154,8 +155,6 @@ def admin_register():
             'success': False,
             'error': str(e)
         }), 500
-    
-    
 
 @bp.route('/api/admin/login', methods=['POST'])
 def admin_login():
@@ -205,6 +204,191 @@ def admin_login():
             }), 401
     
     except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+# 🔧 FIXED: Household endpoints with proper SQL text usage
+@bp.route('/api/households', methods=['GET'])
+def get_households():
+    """Get all households for heatmap visualization"""
+    try:
+        # 🔧 Use lowercase column names (PostgreSQL converts them automatically)
+        households = db.session.execute(text("""
+            SELECT 
+                longitude,
+                latitude,
+                q14_toilet_facility,
+                barangay_code,
+                COUNT(*) as household_count
+            FROM household 
+            WHERE longitude IS NOT NULL 
+            AND latitude IS NOT NULL
+            AND longitude BETWEEN 124.7 AND 125.1
+            AND latitude BETWEEN 10.0 AND 10.3
+            GROUP BY longitude, latitude, q14_toilet_facility, barangay_code
+        """)).fetchall()
+        
+        household_data = []
+        for row in households:
+            household_data.append({
+                'longitude': float(row[0]),  # longitude
+                'latitude': float(row[1]),   # latitude
+                'toilet_facility': row[2],   # q14_toilet_facility
+                'barangay_code': row[3],     # barangay_code
+                'household_count': row[4]    # household_count
+            })
+        
+        print(f"🏠 Found {len(household_data)} household clusters")
+        
+        return jsonify({
+            'success': True,
+            'data': household_data,
+            'total': len(household_data)
+        })
+    except Exception as e:
+        print(f"❌ Error in get_households: {str(e)}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+    
+
+@bp.route('/api/households/risk-analysis', methods=['GET'])
+def get_household_risk_analysis():
+    """Get household risk analysis combining water quality and household density"""
+    try:
+        # 🔧 FIXED: Use proper boolean comparison (TRUE instead of 1)
+        contaminated_locations = db.session.execute(text("""
+            SELECT 
+                longitude as water_lng,
+                latitude as water_lat,
+                coliform_bacteria,
+                e_coli,
+                full_name as location_name
+            FROM water_locations 
+            WHERE (coliform_bacteria = TRUE OR e_coli = TRUE)
+            AND longitude IS NOT NULL 
+            AND latitude IS NOT NULL
+        """)).fetchall()
+        
+        print(f"🚨 Found {len(contaminated_locations)} contaminated water sources")
+        
+        risk_zones = []
+        
+        for water_source in contaminated_locations:
+            print(f"🔍 Analyzing risk around {water_source[4]} at ({water_source[1]}, {water_source[0]})")
+            
+            # 🔧 FIXED: Use lowercase column names and simplified distance calculation
+            households_nearby = db.session.execute(text("""
+                SELECT 
+                    h.longitude,
+                    h.latitude,
+                    COUNT(*) as household_count
+                FROM household h
+                WHERE h.longitude IS NOT NULL 
+                AND h.latitude IS NOT NULL
+                AND ABS(h.longitude - :water_lng) <= 0.005
+                AND ABS(h.latitude - :water_lat) <= 0.005
+                GROUP BY h.longitude, h.latitude
+                HAVING COUNT(*) > 0
+            """), {
+                'water_lat': water_source[1],  # water_lat
+                'water_lng': water_source[0]   # water_lng
+            }).fetchall()
+            
+            print(f"🏠 Found {len(households_nearby)} household clusters near {water_source[4]}")
+            
+            for household_cluster in households_nearby:
+                risk_score = household_cluster[2]  # household_count
+                
+                # Calculate risk multiplier
+                if water_source[2] and water_source[3]:  # both coliform and e_coli
+                    risk_score *= 2.0
+                elif water_source[2] or water_source[3]:  # one bacteria present
+                    risk_score *= 1.5
+                    
+                risk_zones.append({
+                    'longitude': float(household_cluster[0]),  # longitude
+                    'latitude': float(household_cluster[1]),   # latitude
+                    'household_count': household_cluster[2],   # household_count
+                    'risk_score': risk_score,
+                    'water_source': water_source[4],           # location_name
+                    'contamination_type': {
+                        'coliform': bool(water_source[2]),     # coliform_bacteria
+                        'e_coli': bool(water_source[3])        # e_coli
+                    }
+                })
+        
+        print(f"🎯 Generated {len(risk_zones)} risk zones")
+        
+        return jsonify({
+            'success': True,
+            'data': risk_zones,
+            'contaminated_sources': len(contaminated_locations)
+        })
+    except Exception as e:
+        print(f"❌ Error in get_household_risk_analysis: {str(e)}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+    
+
+@bp.route('/api/debug/schema', methods=['GET'])
+def debug_database_schema():
+    """Debug endpoint to check table schemas"""
+    try:
+        # Check households table structure
+        households_schema = db.session.execute(text("""
+            SELECT column_name, data_type, is_nullable
+            FROM information_schema.columns 
+            WHERE table_name = 'households'
+            ORDER BY ordinal_position
+        """)).fetchall()
+        
+        # Check water_locations table structure  
+        water_locations_schema = db.session.execute(text("""
+            SELECT column_name, data_type, is_nullable
+            FROM information_schema.columns 
+            WHERE table_name = 'water_locations'
+            ORDER BY ordinal_position
+        """)).fetchall()
+        
+        # Count records
+        household_count = db.session.execute(text("SELECT COUNT(*) FROM households")).scalar()
+        water_location_count = db.session.execute(text("SELECT COUNT(*) FROM water_locations")).scalar()
+        contaminated_count = db.session.execute(text("""
+            SELECT COUNT(*) FROM water_locations 
+            WHERE coliform_bacteria = TRUE OR e_coli = TRUE
+        """)).scalar()
+        
+        return jsonify({
+            'success': True,
+            'households_schema': [
+                {
+                    'column': row[0],
+                    'type': row[1], 
+                    'nullable': row[2]
+                } for row in households_schema
+            ],
+            'water_locations_schema': [
+                {
+                    'column': row[0],
+                    'type': row[1],
+                    'nullable': row[2]
+                } for row in water_locations_schema
+            ],
+            'record_counts': {
+                'households': household_count,
+                'water_locations': water_location_count,
+                'contaminated_sources': contaminated_count
+            }
+        })
+        
+    except Exception as e:
+        print(f"❌ Error in debug_database_schema: {str(e)}")
         return jsonify({
             'success': False,
             'error': str(e)
