@@ -1,10 +1,78 @@
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, jsonify, request, send_from_directory
 from app import db
 from app.models import WaterLocation, Barangay, Admin, Household
 from sqlalchemy import text
 import json
+import os
+import uuid
+from werkzeug.utils import secure_filename
+from datetime import datetime
 
 bp = Blueprint('main', __name__)
+
+# Configuration for file uploads
+UPLOAD_FOLDER = os.path.join(os.path.dirname(os.path.dirname(__file__)), '..', 'waterapp-frontend', 'public', 'images')
+ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'webp'}
+MAX_FILE_SIZE = 16 * 1024 * 1024  # 16MB
+
+def allowed_file(filename):
+    return '.' in filename and \
+           filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
+@bp.route('/api/upload-image', methods=['POST'])
+def upload_image():
+    """Upload an image for water location"""
+    try:
+        # Check if the post request has the file part
+        if 'file' not in request.files:
+            return jsonify({
+                'success': False,
+                'error': 'No file provided'
+            }), 400
+        
+        file = request.files['file']
+        
+        # If user does not select file, browser also submits an empty part without filename
+        if file.filename == '':
+            return jsonify({
+                'success': False,
+                'error': 'No file selected'
+            }), 400
+        
+        if file and allowed_file(file.filename):
+            # Generate unique filename
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            unique_id = str(uuid.uuid4())[:8]
+            file_extension = file.filename.rsplit('.', 1)[1].lower()
+            filename = f"water_location_{timestamp}_{unique_id}.{file_extension}"
+            
+            # Create upload directory if it doesn't exist
+            os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+            
+            # Save file
+            file_path = os.path.join(UPLOAD_FOLDER, filename)
+            file.save(file_path)
+            
+            # Return the relative path that will be stored in database
+            relative_path = f"images/{filename}"
+            
+            return jsonify({
+                'success': True,
+                'message': 'Image uploaded successfully',
+                'image_path': relative_path,
+                'filename': filename
+            }), 201
+        else:
+            return jsonify({
+                'success': False,
+                'error': 'File type not allowed. Please use: PNG, JPG, JPEG, GIF, or WEBP'
+            }), 400
+            
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': f'Upload failed: {str(e)}'
+        }), 500
 
 @bp.route('/api/water-locations', methods=['GET'])
 def get_water_locations():
@@ -31,6 +99,65 @@ def get_water_location(location_id):
             'data': location.to_dict()
         })
     except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+@bp.route('/api/water-locations', methods=['POST'])
+def create_water_location():
+    """Create a new water location"""
+    try:
+        data = request.get_json()
+        
+        # Validate required fields
+        required_fields = ['full_name', 'latitude', 'longitude']
+        for field in required_fields:
+            if not data.get(field):
+                return jsonify({
+                    'success': False,
+                    'error': f'{field} is required'
+                }), 400
+        
+        # Validate coordinates are within reasonable bounds for Maasin
+        lat = float(data['latitude'])
+        lng = float(data['longitude'])
+        
+        if not (10.0 <= lat <= 10.3) or not (124.7 <= lng <= 125.1):
+            return jsonify({
+                'success': False,
+                'error': 'Coordinates must be within Maasin City bounds'
+            }), 400
+        
+        # Create new water location
+        location = WaterLocation(
+            full_name=data['full_name'].strip(),
+            latitude=lat,
+            longitude=lng,
+            coliform_bacteria=data.get('coliform_bacteria'),
+            e_coli=data.get('e_coli'),
+            image_path=data.get('image_path'),
+            sample_date=data.get('sample_date'),
+            sample_time=data.get('sample_time'),
+            created_by=data.get('created_by')
+        )
+        
+        db.session.add(location)
+        db.session.commit()
+        
+        return jsonify({
+            'success': True,
+            'message': 'Water location created successfully',
+            'data': location.to_dict()
+        }), 201
+        
+    except ValueError as e:
+        return jsonify({
+            'success': False,
+            'error': 'Invalid coordinate values'
+        }), 400
+    except Exception as e:
+        db.session.rollback()
         return jsonify({
             'success': False,
             'error': str(e)
@@ -280,7 +407,6 @@ def get_household_risk_analysis():
         for water_source in contaminated_locations:
             print(f"🔍 Analyzing risk around {water_source[4]} at ({water_source[1]}, {water_source[0]})")
             
-            # 🔧 FIXED: Use lowercase column names and simplified distance calculation
             households_nearby = db.session.execute(text("""
                 SELECT 
                     h.longitude,
@@ -289,8 +415,8 @@ def get_household_risk_analysis():
                 FROM household h
                 WHERE h.longitude IS NOT NULL 
                 AND h.latitude IS NOT NULL
-                AND ABS(h.longitude - :water_lng) <= 0.005
-                AND ABS(h.latitude - :water_lat) <= 0.005
+                AND ABS(h.longitude - :water_lng) <= 0.002
+                AND ABS(h.latitude - :water_lat) <= 0.002
                 GROUP BY h.longitude, h.latitude
                 HAVING COUNT(*) > 0
             """), {
