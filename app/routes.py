@@ -128,10 +128,10 @@ def create_water_location():
                 'success': False,
                 'error': 'Coordinates must be within Maasin City bounds'
             }), 400
-        
-        # Create new water location
+          # Create new water location
         location = WaterLocation(
             full_name=data['full_name'].strip(),
+            barangay=data.get('barangay', '').strip() or None,
             latitude=lat,
             longitude=lng,
             coliform_bacteria=data.get('coliform_bacteria'),
@@ -151,13 +151,39 @@ def create_water_location():
             'data': location.to_dict()
         }), 201
         
-    except ValueError as e:
-        return jsonify({
+    except ValueError as e:        return jsonify({
             'success': False,
             'error': 'Invalid coordinate values'
         }), 400
     except Exception as e:
         db.session.rollback()
+        return jsonify({
+            'success': False,
+            'error': str(e)        }), 500
+
+@bp.route('/api/barangays/from-locations', methods=['GET'])
+def get_barangays_from_locations():
+    """Get distinct barangays from water locations"""
+    try:
+        # Query distinct barangays from water_locations table
+        barangays = db.session.execute(text("""
+            SELECT DISTINCT barangay 
+            FROM water_locations 
+            WHERE barangay IS NOT NULL 
+            AND barangay != ''
+            ORDER BY barangay ASC
+        """)).fetchall()
+        
+        # Extract barangay names from result
+        barangay_list = [row[0] for row in barangays if row[0]]
+        
+        return jsonify({
+            'success': True,
+            'data': barangay_list,
+            'total': len(barangay_list)
+        })
+    except Exception as e:
+        print(f"❌ Error fetching barangays: {str(e)}")
         return jsonify({
             'success': False,
             'error': str(e)
@@ -250,8 +276,7 @@ def admin_register():
                 'success': False,
                 'error': 'Username already exists'
             }), 400
-        
-        # Check if email already exists  
+          # Check if email already exists  
         existing_email = Admin.query.filter_by(email=email).first()
         if existing_email:
             return jsonify({
@@ -259,11 +284,12 @@ def admin_register():
                 'error': 'Email already registered'
             }), 400
         
-        # Create new admin
+        # Create new admin (inactive by default, requires approval)
         new_admin = Admin(
             full_name=full_name.strip(),  # Add full name
             username=username,
-            email=email
+            email=email,
+            is_active=False  # New accounts require approval
         )
         new_admin.set_password(password)
         
@@ -272,7 +298,7 @@ def admin_register():
         
         return jsonify({
             'success': True,
-            'message': 'Admin account created successfully',
+            'message': 'Admin account created successfully. Account is pending approval by system administrator.',
             'admin': new_admin.to_dict()
         })
     
@@ -336,12 +362,10 @@ def admin_login():
             'error': str(e)
         }), 500
 
-# 🔧 FIXED: Household endpoints with proper SQL text usage
 @bp.route('/api/households', methods=['GET'])
 def get_households():
     """Get all households for heatmap visualization"""
     try:
-        # 🔧 Use lowercase column names (PostgreSQL converts them automatically)
         households = db.session.execute(text("""
             SELECT 
                 longitude,
@@ -360,14 +384,12 @@ def get_households():
         household_data = []
         for row in households:
             household_data.append({
-                'longitude': float(row[0]),  # longitude
-                'latitude': float(row[1]),   # latitude
-                'toilet_facility': row[2],   # q14_toilet_facility
-                'barangay_code': row[3],     # barangay_code
-                'household_count': row[4]    # household_count
+                'longitude': float(row[0]), 
+                'latitude': float(row[1]),  
+                'toilet_facility': row[2],   
+                'barangay_code': row[3],     
+                'household_count': row[4]  
             })
-        
-        print(f"🏠 Found {len(household_data)} household clusters")
         
         return jsonify({
             'success': True,
@@ -405,8 +427,7 @@ def get_household_risk_analysis():
         risk_zones = []
         
         for water_source in contaminated_locations:
-            print(f"🔍 Analyzing risk around {water_source[4]} at ({water_source[1]}, {water_source[0]})")
-            
+
             households_nearby = db.session.execute(text("""
                 SELECT 
                     h.longitude,
@@ -415,17 +436,15 @@ def get_household_risk_analysis():
                 FROM household h
                 WHERE h.longitude IS NOT NULL 
                 AND h.latitude IS NOT NULL
-                AND ABS(h.longitude - :water_lng) <= 0.002
-                AND ABS(h.latitude - :water_lat) <= 0.002
+                AND ABS(h.longitude - :water_lng) <= 0.0035
+                AND ABS(h.latitude - :water_lat) <= 0.0035
                 GROUP BY h.longitude, h.latitude
                 HAVING COUNT(*) > 0
             """), {
-                'water_lat': water_source[1],  # water_lat
-                'water_lng': water_source[0]   # water_lng
+                'water_lat': water_source[1], 
+                'water_lng': water_source[0]  
             }).fetchall()
-            
-            print(f"🏠 Found {len(households_nearby)} household clusters near {water_source[4]}")
-            
+
             for household_cluster in households_nearby:
                 risk_score = household_cluster[2]  # household_count
                 
@@ -446,9 +465,7 @@ def get_household_risk_analysis():
                         'e_coli': bool(water_source[3])        # e_coli
                     }
                 })
-        
-        print(f"🎯 Generated {len(risk_zones)} risk zones")
-        
+
         return jsonify({
             'success': True,
             'data': risk_zones,

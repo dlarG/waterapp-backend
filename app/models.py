@@ -11,7 +11,7 @@ class Admin(db.Model):
     password_hash = Column(String(255), nullable=False)
     full_name = Column(String(120), nullable=False)
     email = Column(String(120), unique=True, nullable=True)
-    is_active = Column(Boolean, default=True)
+    is_active = Column(Boolean, default=False)  # New accounts require approval
     
     created_at = Column(DateTime, default=datetime.utcnow)
     last_login = Column(DateTime)
@@ -41,6 +41,7 @@ class WaterLocation(db.Model):
     
     id = Column(Integer, primary_key=True)
     full_name = Column(String(255), nullable=False)
+    barangay = Column(String(100), nullable=True)
     
     latitude = Column(Float, nullable=False)
     longitude = Column(Float, nullable=False)
@@ -61,13 +62,28 @@ class WaterLocation(db.Model):
     
     @property
     def water_status(self):
+        # If both tests haven't been done
+        if self.coliform_bacteria is None and self.e_coli is None:
+            return "pending"
+        
+        # If both bacteria are present - hazard
         if self.coliform_bacteria and self.e_coli:
             return "hazard"
-        elif self.coliform_bacteria or self.e_coli:
+        
+        # If any bacteria is present - undrinkable
+        if self.coliform_bacteria or self.e_coli:
             return "undrinkable"
-        else:
+        
+        # If both are explicitly False (tested and negative) - safe
+        if self.coliform_bacteria is False and self.e_coli is False:
             return "safe"
-    
+        
+        # If only one test is done and negative, other is None - needs more testing
+        if (self.coliform_bacteria is False and self.e_coli is None) or \
+           (self.coliform_bacteria is None and self.e_coli is False):
+            return "partial"
+        
+        return "pending"
     def __repr__(self):
         return f'<WaterLocation {self.full_name}>'
     
@@ -75,6 +91,7 @@ class WaterLocation(db.Model):
         return {
             'id': self.id,
             'full_name': self.full_name,
+            'barangay': self.barangay,
             'latitude': float(self.latitude) if self.latitude else None,
             'longitude': float(self.longitude) if self.longitude else None,
             'coliform_bacteria': self.coliform_bacteria,
@@ -153,7 +170,8 @@ def create_default_admin():
         admin = Admin(
             username='admin',
             full_name='System Administrator',
-            email='admin@watermonitor.com'
+            email='admin@watermonitor.com',
+            is_active=True  # Default admin should be active
         )
         admin.set_password('admin123')
         db.session.add(admin)
