@@ -109,12 +109,15 @@ def create_water_location():
     """Create a new water location"""
     try:
         data = request.get_json()
-        
-        # Validate required fields
+          # Validate required fields
         required_fields = ['full_name', 'latitude', 'longitude']
         for field in required_fields:
             if not data.get(field):
                 return jsonify({
+                    'success': False,
+                    'error': f'{field} is required'
+                }), 400
+            jsonify({
                     'success': False,
                     'error': f'{field} is required'
                 }), 400
@@ -182,8 +185,40 @@ def get_barangays():
 def get_barangays_from_locations():
     """Get unique barangays from existing water locations"""
     try:
-        # Get unique barangays from water_locations table
-        unique_barangays = db.session.execute(text("""
+        print("🔍 Fetching unique barangays from water_locations table...")
+        
+        # First, check if the water_locations table exists and has data
+        table_check = db.session.execute(text("""
+            SELECT EXISTS (
+                SELECT FROM information_schema.tables 
+                WHERE table_name = 'water_locations'
+            )
+        """)).scalar()
+        
+        print(f"📊 water_locations table exists: {table_check}")
+        
+        if not table_check:
+            print("❌ water_locations table does not exist!")
+            return jsonify({
+                'success': False,
+                'error': 'Database table not found'
+            }), 500
+        
+        # Count total records
+        total_records = db.session.execute(text("""
+            SELECT COUNT(*) FROM water_locations
+        """)).scalar()
+        print(f"📊 Total records in water_locations: {total_records}")
+        
+        # Check records with barangay
+        records_with_barangay = db.session.execute(text("""
+            SELECT COUNT(*) FROM water_locations 
+            WHERE barangay IS NOT NULL AND barangay != ''
+        """)).scalar()
+        print(f"📊 Records with barangay: {records_with_barangay}")
+        
+        # Get unique barangays
+        result = db.session.execute(text("""
             SELECT DISTINCT barangay 
             FROM water_locations 
             WHERE barangay IS NOT NULL 
@@ -191,7 +226,10 @@ def get_barangays_from_locations():
             ORDER BY barangay ASC
         """)).fetchall()
         
-        barangay_list = [row[0] for row in unique_barangays if row[0]]
+        print(f"📋 Raw query result: {result}")
+        
+        barangay_list = [row[0] for row in result if row[0]]
+        print(f"✅ Extracted barangays: {barangay_list}")
         
         # Add some default Maasin barangays if none exist in database
         default_barangays = [
@@ -206,17 +244,32 @@ def get_barangays_from_locations():
         
         # If no barangays in database, return defaults
         if not barangay_list:
+            print("⚠️ No barangays found in database, using defaults")
             barangay_list = default_barangays
+            source = 'default'
+        else:
+            source = 'database'
+        
+        print(f"✅ Returning {len(barangay_list)} barangays from {source}")
         
         return jsonify({
             'success': True,
             'data': barangay_list,
-            'source': 'database' if unique_barangays else 'default'
+            'source': source,
+            'count': len(barangay_list),
+            'debug': {
+                'total_records': total_records,
+                'records_with_barangay': records_with_barangay
+            }
         })
     except Exception as e:
+        print(f"❌ Error in get_barangays_from_locations: {str(e)}")
+        import traceback
+        traceback.print_exc()
         return jsonify({
             'success': False,
-            'error': str(e)
+            'error': str(e),
+            'traceback': traceback.format_exc()
         }), 500
 
 @bp.route('/api/map-bounds', methods=['GET'])
