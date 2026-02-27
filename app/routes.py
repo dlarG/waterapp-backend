@@ -128,10 +128,10 @@ def create_water_location():
                 'success': False,
                 'error': 'Coordinates must be within Maasin City bounds'
             }), 400
-        
-        # Create new water location
+          # Create new water location
         location = WaterLocation(
             full_name=data['full_name'].strip(),
+            barangay=data.get('barangay'),  # Added barangay field
             latitude=lat,
             longitude=lng,
             coliform_bacteria=data.get('coliform_bacteria'),
@@ -171,6 +171,47 @@ def get_barangays():
         return jsonify({
             'success': True,
             'data': [barangay.to_dict() for barangay in barangays]
+        })
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+@bp.route('/api/barangays/from-locations', methods=['GET'])
+def get_barangays_from_locations():
+    """Get unique barangays from existing water locations"""
+    try:
+        # Get unique barangays from water_locations table
+        unique_barangays = db.session.execute(text("""
+            SELECT DISTINCT barangay 
+            FROM water_locations 
+            WHERE barangay IS NOT NULL 
+            AND barangay != ''
+            ORDER BY barangay ASC
+        """)).fetchall()
+        
+        barangay_list = [row[0] for row in unique_barangays if row[0]]
+        
+        # Add some default Maasin barangays if none exist in database
+        default_barangays = [
+            "Abgao", "Asuncion", "Batomelong", "Bato", "Batuan",
+            "Combado", "Hantag", "Hibatang", "Icot", "Ismerio",
+            "Kantagnos", "Katipunan", "Malapoc Norte", "Malapoc Sur",
+            "Mantahan", "Matin-ao", "Nonok Norte", "Nonok Sur",
+            "Panian", "Poblacion Norte", "Poblacion Sur", "Rizal",
+            "San Agustin", "San Isidro", "San Roque", "Santo Niño",
+            "Sooc", "Tagnote", "Tagum", "Tomalistis", "Tugas"
+        ]
+        
+        # If no barangays in database, return defaults
+        if not barangay_list:
+            barangay_list = default_barangays
+        
+        return jsonify({
+            'success': True,
+            'data': barangay_list,
+            'source': 'database' if unique_barangays else 'default'
         })
     except Exception as e:
         return jsonify({

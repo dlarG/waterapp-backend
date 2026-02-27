@@ -41,6 +41,7 @@ class WaterLocation(db.Model):
     
     id = Column(Integer, primary_key=True)
     full_name = Column(String(255), nullable=False)
+    barangay = Column(String(100), nullable=True)  # Added barangay field
     
     latitude = Column(Float, nullable=False)
     longitude = Column(Float, nullable=False)
@@ -70,11 +71,12 @@ class WaterLocation(db.Model):
     
     def __repr__(self):
         return f'<WaterLocation {self.full_name}>'
-    
+
     def to_dict(self):
         return {
             'id': self.id,
             'full_name': self.full_name,
+            'barangay': self.barangay,  # Added barangay to response
             'latitude': float(self.latitude) if self.latitude else None,
             'longitude': float(self.longitude) if self.longitude else None,
             'coliform_bacteria': self.coliform_bacteria,
