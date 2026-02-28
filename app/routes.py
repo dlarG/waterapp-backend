@@ -613,3 +613,97 @@ def debug_database_schema():
             'success': False,
             'error': str(e)
         }), 500
+
+@bp.route('/api/water-locations/<int:location_id>', methods=['PUT'])
+def update_water_location(location_id):
+    """Update an existing water location"""
+    try:
+        location = WaterLocation.query.get_or_404(location_id)
+        data = request.get_json()
+        
+        # Update fields if provided
+        if 'full_name' in data:
+            location.full_name = data['full_name'].strip()
+        if 'barangay' in data:
+            location.barangay = data.get('barangay')
+        if 'latitude' in data:
+            lat = float(data['latitude'])
+            if not (10.0 <= lat <= 10.3):
+                return jsonify({
+                    'success': False,
+                    'error': 'Latitude must be within Maasin City bounds'
+                }), 400
+            location.latitude = lat
+        if 'longitude' in data:
+            lng = float(data['longitude'])
+            if not (124.7 <= lng <= 125.1):
+                return jsonify({
+                    'success': False,
+                    'error': 'Longitude must be within Maasin City bounds'
+                }), 400
+            location.longitude = lng
+        if 'coliform_bacteria' in data:
+            location.coliform_bacteria = data.get('coliform_bacteria')
+        if 'e_coli' in data:
+            location.e_coli = data.get('e_coli')
+        if 'sample_date' in data:
+            location.sample_date = data.get('sample_date')
+        if 'sample_time' in data:
+            location.sample_time = data.get('sample_time')
+        if 'image_path' in data:
+            location.image_path = data.get('image_path')
+        
+        # Update timestamp
+        location.updated_at = datetime.utcnow()
+        
+        db.session.commit()
+        
+        return jsonify({
+            'success': True,
+            'message': 'Water location updated successfully',
+            'data': location.to_dict()
+        }), 200
+        
+    except ValueError as e:
+        return jsonify({
+            'success': False,
+            'error': 'Invalid coordinate values'
+        }), 400
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+@bp.route('/api/water-locations/<int:location_id>', methods=['DELETE'])
+def delete_water_location(location_id):
+    """Delete a water location"""
+    try:
+        location = WaterLocation.query.get_or_404(location_id)
+        
+        # Optional: Delete associated image file if it exists
+        if location.image_path:
+            try:
+                image_filename = location.image_path.replace('images/', '')
+                image_path = os.path.join(UPLOAD_FOLDER, image_filename)
+                if os.path.exists(image_path):
+                    os.remove(image_path)
+                    print(f"🗑️ Deleted image: {image_path}")
+            except Exception as e:
+                print(f"⚠️ Could not delete image file: {e}")
+        
+        db.session.delete(location)
+        db.session.commit()
+        
+        return jsonify({
+            'success': True,
+            'message': 'Water location deleted successfully'
+        }), 200
+        
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
