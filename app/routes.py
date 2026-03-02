@@ -946,7 +946,7 @@ def get_household_coverage():
         # Get unique barangays from households
         barangays = db.session.execute(text("""
             SELECT DISTINCT BARANGAY_CODE 
-            FROM households 
+            FROM household 
             WHERE BARANGAY_CODE IS NOT NULL
             ORDER BY BARANGAY_CODE
         """)).fetchall()
