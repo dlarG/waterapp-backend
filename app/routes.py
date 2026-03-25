@@ -109,7 +109,8 @@ def create_water_location():
     """Create a new water location"""
     try:
         data = request.get_json()
-          # Validate required fields
+
+        # Validate required fields
         required_fields = ['full_name', 'latitude', 'longitude']
         for field in required_fields:
             if not data.get(field):
@@ -117,24 +118,23 @@ def create_water_location():
                     'success': False,
                     'error': f'{field} is required'
                 }), 400
-            jsonify({
-                    'success': False,
-                    'error': f'{field} is required'
-                }), 400
-        
+
         # Validate coordinates are within reasonable bounds for Maasin
         lat = float(data['latitude'])
         lng = float(data['longitude'])
-        
+
         if not (10.0 <= lat <= 10.3) or not (124.7 <= lng <= 125.1):
             return jsonify({
                 'success': False,
                 'error': 'Coordinates must be within Maasin City bounds'
             }), 400
-          # Create new water location
+
+        
+
+        # Create new water location
         location = WaterLocation(
             full_name=data['full_name'].strip(),
-            barangay=data.get('barangay'),  # Added barangay field
+            barangay=data.get('barangay'),
             latitude=lat,
             longitude=lng,
             coliform_bacteria=data.get('coliform_bacteria'),
@@ -142,19 +142,20 @@ def create_water_location():
             image_path=data.get('image_path'),
             sample_date=data.get('sample_date'),
             sample_time=data.get('sample_time'),
-            created_by=data.get('created_by')
+            created_by=data.get('created_by'),
+            bacteriological_exam=data.get('bacteriological_exam'),
         )
-        
+
         db.session.add(location)
         db.session.commit()
-        
+
         return jsonify({
             'success': True,
             'message': 'Water location created successfully',
             'data': location.to_dict()
         }), 201
-        
-    except ValueError as e:
+
+    except ValueError:
         return jsonify({
             'success': False,
             'error': 'Invalid coordinate values'
@@ -480,26 +481,42 @@ def get_households():
 def get_household_risk_analysis():
     """Get household risk analysis combining water quality and household density"""
     try:
-        # 🔧 FIXED: Use proper boolean comparison (TRUE instead of 1)
+        # UPDATED: Contaminated locations based primarily on failed bacteriological exam
         contaminated_locations = db.session.execute(text("""
             SELECT 
                 longitude as water_lng,
                 latitude as water_lat,
                 coliform_bacteria,
                 e_coli,
-                full_name as location_name
+                full_name as location_name,
+                bacteriological_exam
             FROM water_locations 
-            WHERE (coliform_bacteria = TRUE OR e_coli = TRUE)
+            WHERE 
+                (
+                    bacteriological_exam = 'failed'
+                    OR (
+                        bacteriological_exam IS NULL 
+                        AND (coliform_bacteria = TRUE OR e_coli = TRUE)
+                    )
+                )
             AND longitude IS NOT NULL 
             AND latitude IS NOT NULL
         """)).fetchall()
         
-        print(f"🚨 Found {len(contaminated_locations)} contaminated water sources")
+        print(f"🚨 Found {len(contaminated_locations)} contaminated water sources (exam-based)")
         
         risk_zones = []
         
         for water_source in contaminated_locations:
-            print(f"🔍 Analyzing risk around {water_source[4]} at ({water_source[1]}, {water_source[0]})")
+            # unpack
+            water_lng = water_source[0]
+            water_lat = water_source[1]
+            coliform = water_source[2]
+            e_coli = water_source[3]
+            location_name = water_source[4]
+            exam = water_source[5]
+            
+            print(f"🔍 Analyzing risk around {location_name} at ({water_lat}, {water_lng}), exam={exam}")
             
             households_nearby = db.session.execute(text("""
                 SELECT 
@@ -514,30 +531,33 @@ def get_household_risk_analysis():
                 GROUP BY h.longitude, h.latitude
                 HAVING COUNT(*) > 0
             """), {
-                'water_lat': water_source[1],  # water_lat
-                'water_lng': water_source[0]   # water_lng
+                'water_lat': water_lat,
+                'water_lng': water_lng
             }).fetchall()
             
-            print(f"🏠 Found {len(households_nearby)} household clusters near {water_source[4]}")
+            print(f"🏠 Found {len(households_nearby)} household clusters near {location_name}")
             
             for household_cluster in households_nearby:
                 risk_score = household_cluster[2]  # household_count
                 
-                # Calculate risk multiplier
-                if water_source[2] and water_source[3]:  # both coliform and e_coli
+                # UPDATED: risk multiplier prioritizing failed exam
+                if exam == 'failed':
                     risk_score *= 2.0
-                elif water_source[2] or water_source[3]:  # one bacteria present
+                elif coliform and e_coli:
+                    risk_score *= 1.8
+                elif coliform or e_coli:
                     risk_score *= 1.5
-                    
+                
                 risk_zones.append({
-                    'longitude': float(household_cluster[0]),  # longitude
-                    'latitude': float(household_cluster[1]),   # latitude
-                    'household_count': household_cluster[2],   # household_count
+                    'longitude': float(household_cluster[0]),
+                    'latitude': float(household_cluster[1]),
+                    'household_count': household_cluster[2],
                     'risk_score': risk_score,
-                    'water_source': water_source[4],           # location_name
+                    'water_source': location_name,
                     'contamination_type': {
-                        'coliform': bool(water_source[2]),     # coliform_bacteria
-                        'e_coli': bool(water_source[3])        # e_coli
+                        'coliform': bool(coliform),
+                        'e_coli': bool(e_coli),
+                        'exam_failed': exam == 'failed'
                     }
                 })
         

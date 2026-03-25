@@ -57,6 +57,7 @@ class WaterLocation(db.Model):
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     created_by = Column(Integer, db.ForeignKey('admins.id'), nullable=True)
+    bacteriological_exam = Column(String(255), nullable=True)
     
     admin = db.relationship('Admin', backref='water_locations')
     
@@ -87,7 +88,8 @@ class WaterLocation(db.Model):
             'sample_time': self.sample_time.isoformat() if self.sample_time else None,
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'updated_at': self.updated_at.isoformat() if self.updated_at else None,
-            'created_by': self.created_by
+            'created_by': self.created_by,
+            'bacteriological_exam': self.bacteriological_exam
         }
 
 # 🆕 NEW: Household Model
