@@ -672,7 +672,13 @@ def update_water_location(location_id):
             location.sample_time = data.get('sample_time')
         if 'image_path' in data:
             location.image_path = data.get('image_path')
-        
+        if 'bacteriological_exam' in data:
+            raw = (data.get('bacteriological_exam') or "").strip().lower()
+            if raw in ("passed", "failed", "untested"):
+                location.bacteriological_exam = raw
+            elif raw == "":
+                location.bacteriological_exam = None
+
         # Update timestamp
         location.updated_at = datetime.utcnow()
         
