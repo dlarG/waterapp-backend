@@ -7,8 +7,28 @@ import os
 import uuid
 from werkzeug.utils import secure_filename
 from datetime import datetime, timedelta
+from app.auth import create_access_token, admin_required
+
 
 bp = Blueprint('main', __name__)
+
+
+def _normalize_mode(value: str) -> str:
+    mode = (value or "quantitative").strip().lower()
+    return mode if mode in ("quantitative", "qualitative") else "quantitative"
+
+
+def _is_passed_exam(loc: WaterLocation) -> bool:
+    return (loc.bacteriological_exam or "").strip().lower() == "passed"
+
+
+def _is_failed_exam(loc: WaterLocation) -> bool:
+    return (loc.bacteriological_exam or "").strip().lower() == "failed"
+
+
+def _is_untested_exam(loc: WaterLocation) -> bool:
+    exam = (loc.bacteriological_exam or "").strip().lower()
+    return exam in ("", "untested")
 
 # Configuration for file uploads
 UPLOAD_FOLDER = os.path.join(os.path.dirname(os.path.dirname(__file__)), '..', 'waterapp-frontend', 'public', 'images')
@@ -75,6 +95,7 @@ def upload_image():
         }), 500
 
 @bp.route('/api/water-locations', methods=['GET'])
+@admin_required
 def get_water_locations():
     """Get all water monitoring locations"""
     try:
@@ -90,6 +111,7 @@ def get_water_locations():
         }), 500
 
 @bp.route('/api/water-locations/<int:location_id>', methods=['GET'])
+@admin_required
 def get_water_location(location_id):
     """Get specific water location details"""
     try:
@@ -105,11 +127,13 @@ def get_water_location(location_id):
         }), 500
 
 @bp.route('/api/water-locations', methods=['POST'])
+@admin_required
 def create_water_location():
     """Create a new water location"""
     try:
         data = request.get_json()
-          # Validate required fields
+
+        # Validate required fields
         required_fields = ['full_name', 'latitude', 'longitude']
         for field in required_fields:
             if not data.get(field):
@@ -117,24 +141,23 @@ def create_water_location():
                     'success': False,
                     'error': f'{field} is required'
                 }), 400
-            jsonify({
-                    'success': False,
-                    'error': f'{field} is required'
-                }), 400
-        
+
         # Validate coordinates are within reasonable bounds for Maasin
         lat = float(data['latitude'])
         lng = float(data['longitude'])
-        
+
         if not (10.0 <= lat <= 10.3) or not (124.7 <= lng <= 125.1):
             return jsonify({
                 'success': False,
                 'error': 'Coordinates must be within Maasin City bounds'
             }), 400
-          # Create new water location
+
+        
+
+        # Create new water location
         location = WaterLocation(
             full_name=data['full_name'].strip(),
-            barangay=data.get('barangay'),  # Added barangay field
+            barangay=data.get('barangay'),
             latitude=lat,
             longitude=lng,
             coliform_bacteria=data.get('coliform_bacteria'),
@@ -142,19 +165,20 @@ def create_water_location():
             image_path=data.get('image_path'),
             sample_date=data.get('sample_date'),
             sample_time=data.get('sample_time'),
-            created_by=data.get('created_by')
+            created_by=data.get('created_by'),
+            bacteriological_exam=data.get('bacteriological_exam'),
         )
-        
+
         db.session.add(location)
         db.session.commit()
-        
+
         return jsonify({
             'success': True,
             'message': 'Water location created successfully',
             'data': location.to_dict()
         }), 201
-        
-    except ValueError as e:
+
+    except ValueError:
         return jsonify({
             'success': False,
             'error': 'Invalid coordinate values'
@@ -408,12 +432,15 @@ def admin_login():
             # Update last login
             admin.last_login = db.func.now()
             db.session.commit()
-            
+
+            access_token = create_access_token(admin)
+
             # 🎯 Enhanced response with complete admin data
             return jsonify({
                 'success': True,
                 'message': 'Login successful',
                 'admin': admin.to_dict(),  # Complete admin object
+                'token': access_token,  # Include access token
                 # Keep these for backward compatibility
                 'full_name': admin.full_name,
                 'username': admin.username,
@@ -432,6 +459,7 @@ def admin_login():
 
 # 🔧 FIXED: Household endpoints with proper SQL text usage
 @bp.route('/api/households', methods=['GET'])
+@admin_required
 def get_households():
     """Get all households for heatmap visualization"""
     try:
@@ -477,30 +505,53 @@ def get_households():
     
 
 @bp.route('/api/households/risk-analysis', methods=['GET'])
+@admin_required
 def get_household_risk_analysis():
     """Get household risk analysis combining water quality and household density"""
     try:
-        # 🔧 FIXED: Use proper boolean comparison (TRUE instead of 1)
-        contaminated_locations = db.session.execute(text("""
-            SELECT 
-                longitude as water_lng,
-                latitude as water_lat,
-                coliform_bacteria,
-                e_coli,
-                full_name as location_name
-            FROM water_locations 
-            WHERE (coliform_bacteria = TRUE OR e_coli = TRUE)
-            AND longitude IS NOT NULL 
-            AND latitude IS NOT NULL
-        """)).fetchall()
-        
-        print(f"🚨 Found {len(contaminated_locations)} contaminated water sources")
-        
+        mode = (request.args.get('mode') or 'qualitative').strip().lower()
+        if mode not in ('qualitative', 'quantitative'):
+            mode = 'qualitative'
+
+        if mode == 'quantitative':
+            contaminated_locations = db.session.execute(text("""
+                SELECT 
+                    longitude as water_lng,
+                    latitude as water_lat,
+                    coliform_bacteria,
+                    e_coli,
+                    full_name as location_name,
+                    bacteriological_exam
+                FROM water_locations 
+                WHERE e_coli = TRUE
+                AND longitude IS NOT NULL 
+                AND latitude IS NOT NULL
+            """)).fetchall()
+        else:
+            contaminated_locations = db.session.execute(text("""
+                SELECT 
+                    longitude as water_lng,
+                    latitude as water_lat,
+                    coliform_bacteria,
+                    e_coli,
+                    full_name as location_name,
+                    bacteriological_exam
+                FROM water_locations 
+                WHERE bacteriological_exam = 'failed'
+                AND longitude IS NOT NULL 
+                AND latitude IS NOT NULL
+            """)).fetchall()
+
         risk_zones = []
-        
+
         for water_source in contaminated_locations:
-            print(f"🔍 Analyzing risk around {water_source[4]} at ({water_source[1]}, {water_source[0]})")
-            
+            water_lng = float(water_source[0])
+            water_lat = float(water_source[1])
+            coliform = water_source[2]
+            e_coli = water_source[3]
+            location_name = water_source[4]
+            exam = water_source[5]
+
             households_nearby = db.session.execute(text("""
                 SELECT 
                     h.longitude,
@@ -514,39 +565,37 @@ def get_household_risk_analysis():
                 GROUP BY h.longitude, h.latitude
                 HAVING COUNT(*) > 0
             """), {
-                'water_lat': water_source[1],  # water_lat
-                'water_lng': water_source[0]   # water_lng
+                'water_lat': water_lat,
+                'water_lng': water_lng
             }).fetchall()
-            
-            print(f"🏠 Found {len(households_nearby)} household clusters near {water_source[4]}")
-            
+
             for household_cluster in households_nearby:
-                risk_score = household_cluster[2]  # household_count
-                
-                # Calculate risk multiplier
-                if water_source[2] and water_source[3]:  # both coliform and e_coli
-                    risk_score *= 2.0
-                elif water_source[2] or water_source[3]:  # one bacteria present
-                    risk_score *= 1.5
-                    
+                risk_score = household_cluster[2] * 2.0
+
                 risk_zones.append({
-                    'longitude': float(household_cluster[0]),  # longitude
-                    'latitude': float(household_cluster[1]),   # latitude
-                    'household_count': household_cluster[2],   # household_count
+                    # household cluster coords (heatmap point)
+                    'longitude': float(household_cluster[0]),
+                    'latitude': float(household_cluster[1]),
+
+                    # ✅ add water source coords (for contaminated markers)
+                    'water_longitude': water_lng,
+                    'water_latitude': water_lat,
+
+                    'household_count': household_cluster[2],
                     'risk_score': risk_score,
-                    'water_source': water_source[4],           # location_name
+                    'water_source': location_name,
                     'contamination_type': {
-                        'coliform': bool(water_source[2]),     # coliform_bacteria
-                        'e_coli': bool(water_source[3])        # e_coli
+                        'coliform': bool(coliform),
+                        'e_coli': bool(e_coli),
+                        'exam_failed': (str(exam).lower() == 'failed') if exam is not None else False
                     }
                 })
-        
-        print(f"🎯 Generated {len(risk_zones)} risk zones")
-        
+
         return jsonify({
             'success': True,
             'data': risk_zones,
-            'contaminated_sources': len(contaminated_locations)
+            'contaminated_sources': len(contaminated_locations),
+            'mode': mode
         })
     except Exception as e:
         print(f"❌ Error in get_household_risk_analysis: {str(e)}")
@@ -615,6 +664,7 @@ def debug_database_schema():
         }), 500
 
 @bp.route('/api/water-locations/<int:location_id>', methods=['PUT'])
+@admin_required
 def update_water_location(location_id):
     """Update an existing water location"""
     try:
@@ -652,7 +702,13 @@ def update_water_location(location_id):
             location.sample_time = data.get('sample_time')
         if 'image_path' in data:
             location.image_path = data.get('image_path')
-        
+        if 'bacteriological_exam' in data:
+            raw = (data.get('bacteriological_exam') or "").strip().lower()
+            if raw in ("passed", "failed", "untested"):
+                location.bacteriological_exam = raw
+            elif raw == "":
+                location.bacteriological_exam = None
+
         # Update timestamp
         location.updated_at = datetime.utcnow()
         
@@ -677,6 +733,7 @@ def update_water_location(location_id):
         }), 500
 
 @bp.route('/api/water-locations/<int:location_id>', methods=['DELETE'])
+@admin_required
 def delete_water_location(location_id):
     """Delete a water location"""
     try:
@@ -709,63 +766,64 @@ def delete_water_location(location_id):
         }), 500
     
 @bp.route('/api/analytics/overview', methods=['GET'])
+@admin_required
 def get_analytics_overview():
-    """Get overview statistics for dashboard"""
+    """Get overview statistics for dashboard (mode-aware)"""
     try:
-        # Water locations statistics
+        mode = _normalize_mode(request.args.get("mode"))
+
         total_locations = WaterLocation.query.count()
-        
-        # Water quality distribution
-        safe_count = WaterLocation.query.filter(
-            WaterLocation.coliform_bacteria == False, 
-            WaterLocation.e_coli == False
-        ).count()
-        
-        warning_count = WaterLocation.query.filter(
-            WaterLocation.coliform_bacteria == True,
-            WaterLocation.e_coli == False
-        ).count()
-        
-        undrinkable_count = WaterLocation.query.filter(
-            WaterLocation.e_coli == True
-        ).count()
-        
-        not_tested_count = WaterLocation.query.filter(
-            WaterLocation.coliform_bacteria == None,
-            WaterLocation.e_coli == None
-        ).count()
-        
-        # Household statistics
+
+        if mode == "qualitative":
+            safe_count = WaterLocation.query.filter(WaterLocation.bacteriological_exam == "passed").count()
+            undrinkable_count = WaterLocation.query.filter(WaterLocation.bacteriological_exam == "failed").count()
+            not_tested_count = WaterLocation.query.filter(
+                (WaterLocation.bacteriological_exam == None) | (WaterLocation.bacteriological_exam == "untested")
+            ).count()
+            warning_count = 0  # no direct "warning" state in exam results
+        else:
+            safe_count = WaterLocation.query.filter(
+                WaterLocation.coliform_bacteria == False,
+                WaterLocation.e_coli == False
+            ).count()
+
+            warning_count = WaterLocation.query.filter(
+                WaterLocation.coliform_bacteria == True,
+                WaterLocation.e_coli == False
+            ).count()
+
+            undrinkable_count = WaterLocation.query.filter(
+                WaterLocation.e_coli == True
+            ).count()
+
+            not_tested_count = WaterLocation.query.filter(
+                WaterLocation.coliform_bacteria == None,
+                WaterLocation.e_coli == None
+            ).count()
+
         total_households = Household.query.count()
-        
-        # Households with toilet facilities (Q14_TOILET_FACILITY = 1 means has facility)
-        households_with_toilet = Household.query.filter(
-            Household.Q14_TOILET_FACILITY == 1
-        ).count()
-        
-        # Calculate risk levels based on proximity to contaminated sources
-        contaminated_sources = WaterLocation.query.filter(
-            (WaterLocation.coliform_bacteria == True) | (WaterLocation.e_coli == True)
-        ).all()
-        
+        households_with_toilet = Household.query.filter(Household.Q14_TOILET_FACILITY == 1).count()
+
+        if mode == "qualitative":
+            contaminated_sources = WaterLocation.query.filter(WaterLocation.bacteriological_exam == "failed").all()
+        else:
+            contaminated_sources = WaterLocation.query.filter(WaterLocation.e_coli == True).all()
+
         high_risk_households = 0
         medium_risk_households = 0
-        
+
         for source in contaminated_sources:
-            # Count households within 200m (approx 0.002 degrees)
             nearby = Household.query.filter(
                 Household.LATITUDE.between(source.latitude - 0.002, source.latitude + 0.002),
                 Household.LONGITUDE.between(source.longitude - 0.002, source.longitude + 0.002)
             ).count()
-            
-            if source.e_coli and source.coliform_bacteria:
-                high_risk_households += nearby
-            elif source.e_coli or source.coliform_bacteria:
-                medium_risk_households += nearby
-        
+
+            high_risk_households += nearby
+
         return jsonify({
             'success': True,
             'data': {
+                'mode': mode,
                 'water_locations': {
                     'total': total_locations,
                     'safe': safe_count,
@@ -786,46 +844,50 @@ def get_analytics_overview():
                 }
             }
         })
-        
+
     except Exception as e:
         print(f"❌ Error in get_analytics_overview: {str(e)}")
-        return jsonify({
-            'success': False,
-            'error': str(e)
-        }), 500
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 @bp.route('/api/analytics/barangay-stats', methods=['GET'])
+@admin_required
 def get_barangay_stats():
-    """Get statistics grouped by barangay"""
+    """Get statistics grouped by barangay (mode-aware)"""
     try:
-        # Get all unique barangays from water_locations
+        mode = _normalize_mode(request.args.get("mode"))
+
         barangays = db.session.execute(text("""
             SELECT DISTINCT barangay 
             FROM water_locations 
             WHERE barangay IS NOT NULL AND barangay != ''
             ORDER BY barangay
         """)).fetchall()
-        
+
         result = []
-        
+
         for [barangay_name] in barangays:
-            # Water locations in this barangay
             locations = WaterLocation.query.filter_by(barangay=barangay_name).all()
-            
-            # Count by status
-            safe = sum(1 for l in locations if l.coliform_bacteria == False and l.e_coli == False)
-            warning = sum(1 for l in locations if l.coliform_bacteria == True and l.e_coli == False)
-            undrinkable = sum(1 for l in locations if l.e_coli == True)
-            not_tested = sum(1 for l in locations if l.coliform_bacteria == None and l.e_coli == None)
-            
-            # Count households in this barangay (using BARANGAY_CODE)
-            households = Household.query.filter(
-                Household.BARANGAY_CODE == barangay_name
-            ).count()
-            
-            # Count contaminated sources
-            contaminated = sum(1 for l in locations if l.e_coli == True or l.coliform_bacteria == True)
-            
+
+            if mode == "qualitative":
+                safe = sum(1 for l in locations if _is_passed_exam(l))
+                undrinkable = sum(1 for l in locations if _is_failed_exam(l))
+                not_tested = sum(1 for l in locations if _is_untested_exam(l))
+                warning = 0
+
+                contaminated = undrinkable
+                # risk_score: weight failed higher, ignore warning
+                risk_score = (undrinkable * 3) / max(len(locations), 1)
+            else:
+                safe = sum(1 for l in locations if l.coliform_bacteria == False and l.e_coli == False)
+                warning = sum(1 for l in locations if l.coliform_bacteria == True and l.e_coli == False)
+                undrinkable = sum(1 for l in locations if l.e_coli == True)
+                not_tested = sum(1 for l in locations if l.coliform_bacteria == None and l.e_coli == None)
+
+                contaminated = sum(1 for l in locations if l.e_coli == True or l.coliform_bacteria == True)
+                risk_score = (undrinkable * 3 + warning * 2) / max(len(locations), 1)
+
+            households = Household.query.filter(Household.BARANGAY_CODE == barangay_name).count()
+
             result.append({
                 'name': barangay_name,
                 'total_locations': len(locations),
@@ -835,118 +897,117 @@ def get_barangay_stats():
                 'not_tested': not_tested,
                 'households': households,
                 'contaminated_sources': contaminated,
-                'risk_score': (undrinkable * 3 + warning * 2) / max(len(locations), 1)
+                'risk_score': risk_score
             })
-        
-        # Sort by risk score (highest first)
+
         result.sort(key=lambda x: x['risk_score'], reverse=True)
-        
-        return jsonify({
-            'success': True,
-            'data': result
-        })
-        
+
+        return jsonify({'success': True, 'data': result, 'mode': mode})
+
     except Exception as e:
         print(f"❌ Error in get_barangay_stats: {str(e)}")
-        return jsonify({
-            'success': False,
-            'error': str(e)
-        }), 500
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 @bp.route('/api/analytics/water-quality-trends', methods=['GET'])
+@admin_required
 def get_water_quality_trends():
-    """Get water quality trends over time"""
+    """Get water quality trends over time (mode-aware)"""
     try:
-        # Get locations from last 30 days
+        mode = _normalize_mode(request.args.get("mode"))
+
         thirty_days_ago = datetime.now() - timedelta(days=30)
-        
+
         locations = WaterLocation.query.filter(
             WaterLocation.sample_date >= thirty_days_ago.date()
         ).order_by(WaterLocation.sample_date).all()
-        
-        # Group by date
+
         trends = {}
         for loc in locations:
-            if loc.sample_date:
-                date_str = loc.sample_date.strftime('%Y-%m-%d')
-                if date_str not in trends:
-                    trends[date_str] = {
-                        'date': date_str,
-                        'safe': 0,
-                        'warning': 0,
-                        'undrinkable': 0,
-                        'total': 0
-                    }
-                
-                trends[date_str]['total'] += 1
-                
+            if not loc.sample_date:
+                continue
+
+            date_str = loc.sample_date.strftime('%Y-%m-%d')
+            if date_str not in trends:
+                trends[date_str] = {
+                    'date': date_str,
+                    'safe': 0,
+                    'warning': 0,
+                    'undrinkable': 0,
+                    'not_tested': 0,
+                    'total': 0
+                }
+
+            trends[date_str]['total'] += 1
+
+            if mode == "qualitative":
+                if _is_failed_exam(loc):
+                    trends[date_str]['undrinkable'] += 1
+                elif _is_passed_exam(loc):
+                    trends[date_str]['safe'] += 1
+                else:
+                    trends[date_str]['not_tested'] += 1
+            else:
                 if loc.e_coli == True:
                     trends[date_str]['undrinkable'] += 1
-                elif loc.coliform_bacteria == True:
+                elif loc.coliform_bacteria == True and loc.e_coli == False:
                     trends[date_str]['warning'] += 1
                 elif loc.coliform_bacteria == False and loc.e_coli == False:
                     trends[date_str]['safe'] += 1
-        
-        return jsonify({
-            'success': True,
-            'data': list(trends.values())
-        })
-        
+                else:
+                    trends[date_str]['not_tested'] += 1
+
+        return jsonify({'success': True, 'data': list(trends.values()), 'mode': mode})
+
     except Exception as e:
         print(f"❌ Error in get_water_quality_trends: {str(e)}")
-        return jsonify({
-            'success': False,
-            'error': str(e)
-        }), 500
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 @bp.route('/api/analytics/contamination-heatmap', methods=['GET'])
+@admin_required
 def get_contamination_heatmap_data():
-    """Get data for contamination heatmap visualization"""
+    """Get data for contamination heatmap visualization (mode-aware)"""
     try:
-        # Get all contaminated sources
-        contaminated = WaterLocation.query.filter(
-            (WaterLocation.coliform_bacteria == True) | (WaterLocation.e_coli == True)
-        ).all()
-        
+        mode = _normalize_mode(request.args.get("mode"))
+
+        if mode == "qualitative":
+            contaminated = WaterLocation.query.filter(WaterLocation.bacteriological_exam == "failed").all()
+        else:
+            contaminated = WaterLocation.query.filter(WaterLocation.e_coli == True).all()
+
         sources_data = []
         for source in contaminated:
-            # Count households within 500m radius
             nearby_households = Household.query.filter(
                 Household.LATITUDE.between(source.latitude - 0.0045, source.latitude + 0.0045),
                 Household.LONGITUDE.between(source.longitude - 0.0045, source.longitude + 0.0045)
             ).count()
-            
+
             sources_data.append({
                 'id': source.id,
                 'name': source.full_name,
                 'latitude': source.latitude,
                 'longitude': source.longitude,
-                'type': 'e_coli' if source.e_coli else 'coliform',
-                'severity': 2 if source.e_coli and source.coliform_bacteria else 1,
+                'mode': mode,
+                'type': 'failed_exam' if mode == "qualitative" else 'e_coli',
+                'severity': 2,
                 'affected_households': nearby_households,
                 'barangay': source.barangay
             })
-        
-        return jsonify({
-            'success': True,
-            'data': sources_data
-        })
-        
+
+        return jsonify({'success': True, 'data': sources_data, 'mode': mode})
+
     except Exception as e:
         print(f"❌ Error in get_contamination_heatmap: {str(e)}")
-        return jsonify({
-            'success': False,
-            'error': str(e)
-        }), 500
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 @bp.route('/api/analytics/household-coverage', methods=['GET'])
+@admin_required
 def get_household_coverage():
     """Get household toilet facility coverage statistics"""
     try:
         # Get unique barangays from households
         barangays = db.session.execute(text("""
             SELECT DISTINCT BARANGAY_CODE 
-            FROM households 
+            FROM household 
             WHERE BARANGAY_CODE IS NOT NULL
             ORDER BY BARANGAY_CODE
         """)).fetchall()
