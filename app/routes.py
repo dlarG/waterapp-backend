@@ -7,6 +7,8 @@ import os
 import uuid
 from werkzeug.utils import secure_filename
 from datetime import datetime, timedelta
+from app.auth import create_access_token, admin_required
+
 
 bp = Blueprint('main', __name__)
 
@@ -75,6 +77,7 @@ def upload_image():
         }), 500
 
 @bp.route('/api/water-locations', methods=['GET'])
+@admin_required
 def get_water_locations():
     """Get all water monitoring locations"""
     try:
@@ -90,6 +93,7 @@ def get_water_locations():
         }), 500
 
 @bp.route('/api/water-locations/<int:location_id>', methods=['GET'])
+@admin_required
 def get_water_location(location_id):
     """Get specific water location details"""
     try:
@@ -105,6 +109,7 @@ def get_water_location(location_id):
         }), 500
 
 @bp.route('/api/water-locations', methods=['POST'])
+@admin_required
 def create_water_location():
     """Create a new water location"""
     try:
@@ -409,12 +414,15 @@ def admin_login():
             # Update last login
             admin.last_login = db.func.now()
             db.session.commit()
-            
+
+            access_token = create_access_token(admin)
+
             # 🎯 Enhanced response with complete admin data
             return jsonify({
                 'success': True,
                 'message': 'Login successful',
                 'admin': admin.to_dict(),  # Complete admin object
+                'token': access_token,  # Include access token
                 # Keep these for backward compatibility
                 'full_name': admin.full_name,
                 'username': admin.username,
@@ -433,6 +441,7 @@ def admin_login():
 
 # 🔧 FIXED: Household endpoints with proper SQL text usage
 @bp.route('/api/households', methods=['GET'])
+@admin_required
 def get_households():
     """Get all households for heatmap visualization"""
     try:
@@ -478,46 +487,53 @@ def get_households():
     
 
 @bp.route('/api/households/risk-analysis', methods=['GET'])
+@admin_required
 def get_household_risk_analysis():
     """Get household risk analysis combining water quality and household density"""
     try:
-        # UPDATED: Contaminated locations based primarily on failed bacteriological exam
-        contaminated_locations = db.session.execute(text("""
-            SELECT 
-                longitude as water_lng,
-                latitude as water_lat,
-                coliform_bacteria,
-                e_coli,
-                full_name as location_name,
-                bacteriological_exam
-            FROM water_locations 
-            WHERE 
-                (
-                    bacteriological_exam = 'failed'
-                    OR (
-                        bacteriological_exam IS NULL 
-                        AND (coliform_bacteria = TRUE OR e_coli = TRUE)
-                    )
-                )
-            AND longitude IS NOT NULL 
-            AND latitude IS NOT NULL
-        """)).fetchall()
-        
-        print(f"🚨 Found {len(contaminated_locations)} contaminated water sources (exam-based)")
-        
+        mode = (request.args.get('mode') or 'qualitative').strip().lower()
+        if mode not in ('qualitative', 'quantitative'):
+            mode = 'qualitative'
+
+        if mode == 'quantitative':
+            contaminated_locations = db.session.execute(text("""
+                SELECT 
+                    longitude as water_lng,
+                    latitude as water_lat,
+                    coliform_bacteria,
+                    e_coli,
+                    full_name as location_name,
+                    bacteriological_exam
+                FROM water_locations 
+                WHERE e_coli = TRUE
+                AND longitude IS NOT NULL 
+                AND latitude IS NOT NULL
+            """)).fetchall()
+        else:
+            contaminated_locations = db.session.execute(text("""
+                SELECT 
+                    longitude as water_lng,
+                    latitude as water_lat,
+                    coliform_bacteria,
+                    e_coli,
+                    full_name as location_name,
+                    bacteriological_exam
+                FROM water_locations 
+                WHERE bacteriological_exam = 'failed'
+                AND longitude IS NOT NULL 
+                AND latitude IS NOT NULL
+            """)).fetchall()
+
         risk_zones = []
-        
+
         for water_source in contaminated_locations:
-            # unpack
-            water_lng = water_source[0]
-            water_lat = water_source[1]
+            water_lng = float(water_source[0])
+            water_lat = float(water_source[1])
             coliform = water_source[2]
             e_coli = water_source[3]
             location_name = water_source[4]
             exam = water_source[5]
-            
-            print(f"🔍 Analyzing risk around {location_name} at ({water_lat}, {water_lng}), exam={exam}")
-            
+
             households_nearby = db.session.execute(text("""
                 SELECT 
                     h.longitude,
@@ -534,39 +550,34 @@ def get_household_risk_analysis():
                 'water_lat': water_lat,
                 'water_lng': water_lng
             }).fetchall()
-            
-            print(f"🏠 Found {len(households_nearby)} household clusters near {location_name}")
-            
+
             for household_cluster in households_nearby:
-                risk_score = household_cluster[2]  # household_count
-                
-                # UPDATED: risk multiplier prioritizing failed exam
-                if exam == 'failed':
-                    risk_score *= 2.0
-                elif coliform and e_coli:
-                    risk_score *= 1.8
-                elif coliform or e_coli:
-                    risk_score *= 1.5
-                
+                risk_score = household_cluster[2] * 2.0
+
                 risk_zones.append({
+                    # household cluster coords (heatmap point)
                     'longitude': float(household_cluster[0]),
                     'latitude': float(household_cluster[1]),
+
+                    # ✅ add water source coords (for contaminated markers)
+                    'water_longitude': water_lng,
+                    'water_latitude': water_lat,
+
                     'household_count': household_cluster[2],
                     'risk_score': risk_score,
                     'water_source': location_name,
                     'contamination_type': {
                         'coliform': bool(coliform),
                         'e_coli': bool(e_coli),
-                        'exam_failed': exam == 'failed'
+                        'exam_failed': (str(exam).lower() == 'failed') if exam is not None else False
                     }
                 })
-        
-        print(f"🎯 Generated {len(risk_zones)} risk zones")
-        
+
         return jsonify({
             'success': True,
             'data': risk_zones,
-            'contaminated_sources': len(contaminated_locations)
+            'contaminated_sources': len(contaminated_locations),
+            'mode': mode
         })
     except Exception as e:
         print(f"❌ Error in get_household_risk_analysis: {str(e)}")
@@ -635,6 +646,7 @@ def debug_database_schema():
         }), 500
 
 @bp.route('/api/water-locations/<int:location_id>', methods=['PUT'])
+@admin_required
 def update_water_location(location_id):
     """Update an existing water location"""
     try:
@@ -703,6 +715,7 @@ def update_water_location(location_id):
         }), 500
 
 @bp.route('/api/water-locations/<int:location_id>', methods=['DELETE'])
+@admin_required
 def delete_water_location(location_id):
     """Delete a water location"""
     try:
@@ -735,6 +748,7 @@ def delete_water_location(location_id):
         }), 500
     
 @bp.route('/api/analytics/overview', methods=['GET'])
+@admin_required
 def get_analytics_overview():
     """Get overview statistics for dashboard"""
     try:
@@ -821,6 +835,7 @@ def get_analytics_overview():
         }), 500
 
 @bp.route('/api/analytics/barangay-stats', methods=['GET'])
+@admin_required
 def get_barangay_stats():
     """Get statistics grouped by barangay"""
     try:
@@ -880,6 +895,7 @@ def get_barangay_stats():
         }), 500
 
 @bp.route('/api/analytics/water-quality-trends', methods=['GET'])
+@admin_required
 def get_water_quality_trends():
     """Get water quality trends over time"""
     try:
@@ -926,6 +942,7 @@ def get_water_quality_trends():
         }), 500
 
 @bp.route('/api/analytics/contamination-heatmap', methods=['GET'])
+@admin_required
 def get_contamination_heatmap_data():
     """Get data for contamination heatmap visualization"""
     try:
@@ -966,6 +983,7 @@ def get_contamination_heatmap_data():
         }), 500
 
 @bp.route('/api/analytics/household-coverage', methods=['GET'])
+@admin_required
 def get_household_coverage():
     """Get household toilet facility coverage statistics"""
     try:
